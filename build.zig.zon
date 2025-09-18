@@ -8,8 +8,7 @@
     .minimum_zig_version = "0.14.0",
 
     .dependencies = .{
-        // .@"zig-napi" = .{ .url = "https://github.com/openharmony-zig/zig-addon/archive/refs/tags/0.0.1-beta.0.tar.gz", .hash = "zig_napi-0.0.1-beta.0-H6Owa97VAADPfs6pSj8O3_fMxN1POnDKyd8hy5QPa1d8" },
-        .@"zig-napi" = .{ .path = "../zig-addon" },
+        .@"zig-napi" = .{ .url = "https://github.com/openharmony-zig/zig-addon/archive/refs/tags/0.0.1-beta.1.tar.gz", .hash = "zig_napi-0.0.1-beta.0-H6Oway9fAgCXdI4QB4g2F9NB-A_7ZP4PWJtgGGyDOCO1" },
     },
 
     .paths = .{
