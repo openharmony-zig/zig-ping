@@ -1,0 +1,1 @@
+export * from "libzig_ping.so"
