@@ -9,12 +9,11 @@ pub fn build(b: *std.Build) !void {
 
     const napi = zig_napi.module("napi");
 
-    const result = try napi_build.nativeAddonBuild(b, .{
-        .name = "zig_ping",
+    const result = try napi_build.nativeAddonBuild(b, .{ .name = "zig_ping", .root_module_options = .{
         .root_source_file = b.path("./src/lib.zig"),
         .target = target,
         .optimize = optimize,
-    });
+    } });
 
     if (result.arm64) |arm64| {
         arm64.root_module.addImport("napi", napi);

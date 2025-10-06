@@ -30,20 +30,20 @@ pub fn isValidIP(ip_str: []const u8) bool {
 
 fn formatAddress(allocator: Allocator, addr: std.net.Address) ![]const u8 {
     var buf: [64]u8 = undefined;
-    var stream = std.io.fixedBufferStream(&buf);
+    var writer = std.Io.Writer.fixed(&buf);
 
     switch (addr.any.family) {
         posix.AF.INET => {
             const bytes = std.mem.asBytes(&addr.in.sa.addr);
-            try std.fmt.format(stream.writer(), "{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
+            _ = try writer.print("{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
         },
         posix.AF.INET6 => {
-            try addr.in6.format("", .{}, stream.writer());
+            _ = try addr.in6.format(&writer);
         },
         else => return error.UnsupportedFamily,
     }
 
-    return try allocator.dupe(u8, stream.getWritten());
+    return try allocator.dupe(u8, writer.buffer);
 }
 
 fn isAddressFamily(addr: std.net.Address, family: IPFamily) bool {

@@ -42,7 +42,7 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
         return napi.Error.fromReason("Failed to parse IP address");
     };
 
-    var results = ArrayList(PingResult).init(allocator);
+    var results = ArrayList(PingResult).empty;
 
     if (target_addr.any.family != posix.AF.INET and target_addr.any.family != posix.AF.INET6) {
         return napi.Error.fromReason("IPv4 is not supported");
@@ -83,7 +83,7 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
 
         // Parse the received packet
         const icmp_data = pack.extractICMPFromIP(buffer[0..bytes_received]) catch {
-            results.append(PingResult{
+            results.append(allocator, PingResult{
                 .sequence = 1,
                 .rtt_ms = rtt_ms,
                 .success = false,
@@ -94,7 +94,7 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
         };
 
         const received_packet = pack.ICMPPacket.parse(allocator, icmp_data) catch {
-            results.append(PingResult{
+            results.append(allocator, PingResult{
                 .sequence = 1,
                 .rtt_ms = rtt_ms,
                 .success = false,
@@ -106,7 +106,7 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
 
         // Verify checksum
         if (!received_packet.verifyChecksum()) {
-            results.append(PingResult{
+            results.append(allocator, PingResult{
                 .sequence = 1,
                 .rtt_ms = rtt_ms,
                 .success = false,
@@ -120,7 +120,7 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
         const is_echo_reply = received_packet.header.type == pack.ICMP_ECHO_REPLY;
         const sequence_match = std.mem.nativeToBig(u16, received_packet.header.sequence) == index;
 
-        results.append(PingResult{
+        results.append(allocator, PingResult{
             .sequence = 1,
             .rtt_ms = rtt_ms,
             .success = is_echo_reply and sequence_match,
