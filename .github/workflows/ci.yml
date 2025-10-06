@@ -1,0 +1,30 @@
+name: Build test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    name: Test build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup OpenHarmony SDK
+        uses: openharmony-rs/setup-ohos-sdk@v0.2
+        id: setup-ohos
+        with:
+          version: "5.0.0"
+
+      - name: Setup Zig for OpenHarmony
+        uses: openharmony-zig/setup-zig-ohos@v0.1.0
+        id: setup-zig
+
+      - name: Build
+        run: |
+          zig build
