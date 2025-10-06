@@ -43,7 +43,7 @@ fn formatAddress(allocator: Allocator, addr: std.net.Address) ![]const u8 {
         else => return error.UnsupportedFamily,
     }
 
-    return try allocator.dupe(u8, writer.buffer);
+    return try allocator.dupe(u8, writer.buffered());
 }
 
 fn isAddressFamily(addr: std.net.Address, family: IPFamily) bool {
