@@ -5,9 +5,9 @@
 
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.15.1",
+    .minimum_zig_version = "0.16.0",
 
-    .dependencies = .{ .@"zig-napi" = .{ .url = "https://github.com/openharmony-zig/zig-addon/archive/refs/tags/0.0.1-beta.2.tar.gz", .hash = "zig_napi-0.0.1-beta.2-H6OwawaxAgDMitwMH0m5ZJZoIpdc5LU2C34P_msTfEQo" } },
+    .dependencies = .{ .@"zig-napi" = .{ .url = "https://github.com/openharmony-zig/zig-napi/archive/959f5064b1c468e0633f9cbda82a8a5c7a104051.tar.gz", .hash = "zig_napi-0.0.1-beta.2-H6Owa0zZBQDiGhGlYhHMQLLuKD-Ndn-S7a2HV7BSVhB7" } },
 
     .paths = .{
         "build.zig",

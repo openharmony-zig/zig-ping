@@ -1,8 +1,14 @@
 const std = @import("std");
 const napi = @import("napi");
-const net = std.net;
+const net = std.Io.net;
 const posix = std.posix;
 const Allocator = std.mem.Allocator;
+
+const PosixAddress = extern union {
+    any: posix.sockaddr,
+    in: posix.sockaddr.in,
+    in6: posix.sockaddr.in6,
+};
 
 pub const IPResolverError = error{
     InvalidIPFormat,
@@ -17,28 +23,33 @@ pub const IPFamily = enum {
 };
 
 pub fn isValidIP(ip_str: []const u8) bool {
-    if (net.Address.parseIp4(ip_str, 0)) |_| {
+    if (net.IpAddress.parseIp4(ip_str, 0)) |_| {
         return true;
     } else |_| {}
 
-    if (net.Address.parseIp6(ip_str, 0)) |_| {
+    if (net.IpAddress.parseIp6(ip_str, 0)) |_| {
         return true;
     } else |_| {}
 
     return false;
 }
 
-fn formatAddress(allocator: Allocator, addr: std.net.Address) ![]const u8 {
+fn formatSockaddr(allocator: Allocator, addr: *const posix.sockaddr) ![]const u8 {
     var buf: [64]u8 = undefined;
     var writer = std.Io.Writer.fixed(&buf);
+    const storage: *const PosixAddress = @ptrCast(@alignCast(addr));
 
-    switch (addr.any.family) {
+    switch (addr.family) {
         posix.AF.INET => {
-            const bytes = std.mem.asBytes(&addr.in.sa.addr);
+            const bytes: [4]u8 = @bitCast(storage.in.addr);
             _ = try writer.print("{}.{}.{}.{}", .{ bytes[0], bytes[1], bytes[2], bytes[3] });
         },
         posix.AF.INET6 => {
-            _ = try addr.in6.format(&writer);
+            const ip6 = net.Ip6Address.Unresolved{
+                .bytes = storage.in6.addr,
+                .interface_name = null,
+            };
+            _ = try ip6.format(&writer);
         },
         else => return error.UnsupportedFamily,
     }
@@ -46,38 +57,58 @@ fn formatAddress(allocator: Allocator, addr: std.net.Address) ![]const u8 {
     return try allocator.dupe(u8, writer.buffered());
 }
 
-fn isAddressFamily(addr: std.net.Address, family: IPFamily) bool {
+fn isAddressFamily(addr: *const posix.sockaddr, family: IPFamily) bool {
     return switch (family) {
-        .ipv4 => addr.any.family == posix.AF.INET,
-        .ipv6 => addr.any.family == posix.AF.INET6,
+        .ipv4 => addr.family == posix.AF.INET,
+        .ipv6 => addr.family == posix.AF.INET6,
         .auto => true,
     };
 }
 
 /// Resolve hostname to IP address string
 pub fn resolveHostname(allocator: Allocator, hostname: []const u8, prefer: IPFamily) ![]const u8 {
-    // Use std.net to resolve hostname
-    const address_list = std.net.getAddressList(allocator, hostname, 0) catch {
-        return napi.Error.fromReason("Failed to resolve hostname");
+    const hostname_z = try allocator.dupeZ(u8, hostname);
+    defer allocator.free(hostname_z);
+
+    const family: i32 = switch (prefer) {
+        .ipv4 => @intCast(posix.AF.INET),
+        .ipv6 => @intCast(posix.AF.INET6),
+        .auto => @intCast(posix.AF.UNSPEC),
     };
-    defer address_list.deinit();
+    const hints = std.c.addrinfo{
+        .flags = .{},
+        .family = family,
+        .socktype = @intCast(posix.SOCK.DGRAM),
+        .protocol = 0,
+        .addrlen = 0,
+        .addr = null,
+        .canonname = null,
+        .next = null,
+    };
 
-    if (address_list.addrs.len == 0) {
-        return napi.Error.fromReason("Resolve hostname's result is empty");
+    var result: ?*std.c.addrinfo = null;
+    if (@intFromEnum(std.c.getaddrinfo(hostname_z, null, &hints, &result)) != 0) {
+        return napi.Error.fromReason("Failed to resolve hostname");
     }
+    defer if (result) |res| std.c.freeaddrinfo(res);
 
-    // If auto mode, return the first address
-    if (prefer == .auto) {
-        return try formatAddress(allocator, address_list.addrs[0]);
-    }
-
-    for (address_list.addrs) |addr| {
+    var first_addr: ?*posix.sockaddr = null;
+    var item = result;
+    while (item) |info| : (item = info.next) {
+        const addr = info.addr orelse continue;
+        if (first_addr == null) {
+            first_addr = addr;
+        }
         if (isAddressFamily(addr, prefer)) {
-            return try formatAddress(allocator, addr);
+            return try formatSockaddr(allocator, addr);
         }
     }
 
-    return try formatAddress(allocator, address_list.addrs[0]);
+    if (first_addr) |addr| {
+        return try formatSockaddr(allocator, addr);
+    } else {
+        return napi.Error.fromReason("Resolve hostname's result is empty");
+    }
 }
 
 /// Main function: get IP address string
