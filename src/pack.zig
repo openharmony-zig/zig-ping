@@ -22,6 +22,8 @@ pub const ICMPHeader = packed struct {
 
 pub const ICMP_ECHO_REQUEST: u8 = 8;
 pub const ICMP_ECHO_REPLY: u8 = 0;
+pub const ICMPV6_ECHO_REQUEST: u8 = 128;
+pub const ICMPV6_ECHO_REPLY: u8 = 129;
 
 pub const IPHeader = packed struct {
     version_ihl: u8,

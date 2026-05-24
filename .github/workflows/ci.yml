@@ -30,3 +30,45 @@ jobs:
       - name: Build
         run: |
           zig build
+
+  arkvm-test:
+    runs-on: ubuntu-latest
+    name: ArkVM test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig for OpenHarmony
+        uses: openharmony-zig/setup-zig-ohos@v0.1.0
+        with:
+          tag: "0.16.0"
+
+      - name: Setup ArkVM
+        id: setup-arkvm
+        uses: harmony-contrib/arkts-vm@v2.0.0
+        with:
+          cache: true
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libatomic1
+          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
+
+      - name: Validate Ark host bundle
+        env:
+          ARK_HOST_TOOLS_DIR: ${{ steps.setup-arkvm.outputs.arkvm-path }}
+        run: |
+          set -euo pipefail
+          test -x "${ARK_HOST_TOOLS_DIR}/ark_js_napi_cli"
+          test -x "${ARK_HOST_TOOLS_DIR}/es2abc"
+          test -f "${ARK_HOST_TOOLS_DIR}/libace_napi.so"
+          test -f "${ARK_HOST_TOOLS_DIR}/libets_interop_js_napi.so"
+          test -f "${ARK_HOST_TOOLS_DIR}/etsstdlib.abc"
+          test -f "${ARK_HOST_TOOLS_DIR}/hello.abc"
+
+      - name: Run ArkVM test
+        env:
+          ARK_HOST_TOOLS_DIR: ${{ steps.setup-arkvm.outputs.arkvm-path }}
+        run: bash scripts/run_arkvm_test.sh

@@ -3,6 +3,7 @@
 zig-pkg/
 zig-out
 dist/
+.tmp_arkvm_runner/
 
 package.har
 package/libs/

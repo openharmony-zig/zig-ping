@@ -139,10 +139,11 @@ fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
     errdefer deinitPartialPingResults(allocator, &results);
 
     if (target_addr.family != posix.AF.INET and target_addr.family != posix.AF.INET6) {
-        return napi.Error.fromReason("IPv4 is not supported");
+        return napi.Error.fromReason("IP address family is not supported");
     }
 
-    const socket_rc = std.c.socket(@intCast(target_addr.family), @intCast(posix.SOCK.DGRAM), @intCast(posix.IPPROTO.ICMP));
+    const protocol: u32 = if (target_addr.family == posix.AF.INET6) @intCast(posix.IPPROTO.ICMPV6) else @intCast(posix.IPPROTO.ICMP);
+    const socket_rc = std.c.socket(@intCast(target_addr.family), @intCast(posix.SOCK.DGRAM), protocol);
     if (socket_rc < 0) {
         return napi.Error.fromReason("Failed to create socket");
     }
@@ -166,6 +167,10 @@ fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
     for (0..config.config.count) |index| {
         // Create ICMP packet with auto-generated payload
         var packet = pack.ICMPPacket.init(allocator, 1, @intCast(index)) catch @panic("Failed to initialize ICMP packet");
+        const echo_reply_type = if (target_addr.family == posix.AF.INET6) pack.ICMPV6_ECHO_REPLY else pack.ICMP_ECHO_REPLY;
+        if (target_addr.family == posix.AF.INET6) {
+            packet.header.type = pack.ICMPV6_ECHO_REQUEST;
+        }
         defer allocator.free(packet.data);
 
         const packet_data = packet.serialize(allocator) catch {
@@ -188,18 +193,21 @@ fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
         const rtt_ms = @as(f64, @floatFromInt(rtt_ns)) / 1_000_000.0;
 
         // Parse the received packet
-        const icmp_data = pack.extractICMPFromIP(buffer[0..bytes_received]) catch {
-            appendPingResult(
-                allocator,
-                &results,
-                1,
-                rtt_ms,
-                false,
-                "Failed to extract ICMP data from IP packet",
-                target_ip,
-            ) catch @panic("Failed to append PingResult");
-            continue;
-        };
+        const icmp_data = if (target_addr.family == posix.AF.INET6)
+            buffer[0..bytes_received]
+        else
+            pack.extractICMPFromIP(buffer[0..bytes_received]) catch {
+                appendPingResult(
+                    allocator,
+                    &results,
+                    1,
+                    rtt_ms,
+                    false,
+                    "Failed to extract ICMP data from IP packet",
+                    target_ip,
+                ) catch @panic("Failed to append PingResult");
+                continue;
+            };
 
         const received_packet = pack.ICMPPacket.parse(allocator, icmp_data) catch {
             appendPingResult(
@@ -215,7 +223,7 @@ fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
         };
 
         // Verify checksum
-        if (!received_packet.verifyChecksum()) {
+        if (target_addr.family == posix.AF.INET and !received_packet.verifyChecksum()) {
             appendPingResult(
                 allocator,
                 &results,
@@ -229,7 +237,7 @@ fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
         }
 
         // Check if it's an echo reply
-        const is_echo_reply = received_packet.header.type == pack.ICMP_ECHO_REPLY;
+        const is_echo_reply = received_packet.header.type == echo_reply_type;
         const sequence_match = std.mem.nativeToBig(u16, received_packet.header.sequence) == index;
 
         appendPingResult(
