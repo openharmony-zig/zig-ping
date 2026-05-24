@@ -53,7 +53,7 @@ jobs:
       - name: Install runtime dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libatomic1
+          sudo apt-get install -y --no-install-recommends libatomic1 libcap2-bin
 
       - name: Validate Ark host bundle
         env:
@@ -66,6 +66,11 @@ jobs:
           test -f "${ARK_HOST_TOOLS_DIR}/libets_interop_js_napi.so"
           test -f "${ARK_HOST_TOOLS_DIR}/etsstdlib.abc"
           test -f "${ARK_HOST_TOOLS_DIR}/hello.abc"
+
+      - name: Allow ICMP sockets
+        env:
+          ARK_HOST_TOOLS_DIR: ${{ steps.setup-arkvm.outputs.arkvm-path }}
+        run: sudo setcap cap_net_raw+ep "${ARK_HOST_TOOLS_DIR}/ark_js_napi_cli"
 
       - name: Run ArkVM test
         env:
