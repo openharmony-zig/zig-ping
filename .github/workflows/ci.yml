@@ -54,6 +54,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libatomic1
+          sudo sysctl -w net.ipv4.ping_group_range="0 2147483647"
 
       - name: Validate Ark host bundle
         env:
@@ -70,9 +71,4 @@ jobs:
       - name: Run ArkVM test
         env:
           ARK_HOST_TOOLS_DIR: ${{ steps.setup-arkvm.outputs.arkvm-path }}
-        run: |
-          zig build -Darkvm-test=true -Doptimize=ReleaseSafe
-          sudo env \
-            ARK_HOST_TOOLS_DIR="${ARK_HOST_TOOLS_DIR}" \
-            ARKVM_SKIP_BUILD=1 \
-            bash scripts/run_arkvm_test.sh
+        run: bash scripts/run_arkvm_test.sh
