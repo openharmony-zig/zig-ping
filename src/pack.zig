@@ -1,9 +1,4 @@
 const std = @import("std");
-const net = std.net;
-const os = std.os;
-const time = std.time;
-const print = std.debug.print;
-const ArrayList = std.ArrayList;
 
 pub const ICMPHeader = packed struct {
     type: u8,

@@ -1,11 +1,65 @@
 const std = @import("std");
 const napi = @import("napi");
-const net = std.net;
-const os = std.os;
+const net = std.Io.net;
 const posix = std.posix;
 const pack = @import("pack.zig");
 const domain = @import("domain.zig");
 const ArrayList = std.ArrayList;
+
+const PosixAddress = extern union {
+    any: posix.sockaddr,
+    in: posix.sockaddr.in,
+    in6: posix.sockaddr.in6,
+};
+
+const ParsedAddress = struct {
+    storage: PosixAddress,
+    len: posix.socklen_t,
+    family: posix.sa_family_t,
+};
+
+fn parseIPAddress(ip_addr: []const u8) !ParsedAddress {
+    const addr = net.IpAddress.parse(ip_addr, 0) catch return error.InvalidAddress;
+
+    switch (addr) {
+        .ip4 => |ip4| {
+            const storage = PosixAddress{
+                .in = .{
+                    .port = std.mem.nativeToBig(u16, ip4.port),
+                    .addr = @bitCast(ip4.bytes),
+                },
+            };
+            return .{
+                .storage = storage,
+                .len = @sizeOf(posix.sockaddr.in),
+                .family = posix.AF.INET,
+            };
+        },
+        .ip6 => |ip6| {
+            const storage = PosixAddress{
+                .in6 = .{
+                    .port = std.mem.nativeToBig(u16, ip6.port),
+                    .flowinfo = ip6.flow,
+                    .addr = ip6.bytes,
+                    .scope_id = ip6.interface.index,
+                },
+            };
+            return .{
+                .storage = storage,
+                .len = @sizeOf(posix.sockaddr.in6),
+                .family = posix.AF.INET6,
+            };
+        },
+    }
+}
+
+fn monotonicNanoTimestamp() i128 {
+    var ts: posix.timespec = undefined;
+    if (std.c.clock_gettime(.MONOTONIC, &ts) != 0) {
+        @panic("Failed to get monotonic clock");
+    }
+    return @as(i128, ts.sec) * std.time.ns_per_s + @as(i128, ts.nsec);
+}
 
 const PingResult = struct {
     sequence: u16,
@@ -13,6 +67,15 @@ const PingResult = struct {
     success: bool,
     error_msg: ?[]const u8,
     ip_addr: []const u8,
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        if (self.error_msg) |msg| {
+            allocator.free(msg);
+        }
+        allocator.free(self.ip_addr);
+    }
 };
 
 const PingOption = struct {
@@ -26,31 +89,65 @@ const InnerPingOption = struct {
     count: u32,
     interval_ms: u32,
     timeout_ms: u32,
-    ip_version: []const u8,
+    ip_version: domain.IPFamily,
 };
 
-fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
-    const allocator = std.heap.page_allocator;
+fn appendPingResult(
+    allocator: std.mem.Allocator,
+    results: *ArrayList(PingResult),
+    sequence: u16,
+    rtt_ms: f64,
+    success: bool,
+    error_msg: ?[]const u8,
+    ip_addr: []const u8,
+) !void {
+    const owned_error = if (error_msg) |msg| try allocator.dupe(u8, msg) else null;
+    errdefer if (owned_error) |msg| allocator.free(msg);
 
-    const ip_version = if (std.mem.eql(u8, config.config.ip_version, "ipv4")) domain.IPFamily.ipv4 else if (std.mem.eql(u8, config.config.ip_version, "ipv6")) domain.IPFamily.ipv6 else domain.IPFamily.auto;
+    const owned_ip_addr = try allocator.dupe(u8, ip_addr);
+    errdefer allocator.free(owned_ip_addr);
 
-    const target_ip = domain.getIPAddress(allocator, config.host, ip_version) catch {
+    try results.append(allocator, PingResult{
+        .sequence = sequence,
+        .rtt_ms = rtt_ms,
+        .success = success,
+        .error_msg = owned_error,
+        .ip_addr = owned_ip_addr,
+    });
+}
+
+fn deinitPartialPingResults(allocator: std.mem.Allocator, results: *ArrayList(PingResult)) void {
+    for (results.items) |*result| {
+        result.deinit(allocator);
+    }
+    results.deinit(allocator);
+}
+
+fn ping_execute(config: PingConfig) !ArrayList(PingResult) {
+    const allocator = napi.globalAllocator();
+
+    const target_ip = domain.getIPAddress(allocator, config.host, config.config.ip_version) catch {
         return napi.Error.fromReason("Failed to get IP address");
     };
+    defer allocator.free(target_ip);
 
-    const target_addr = net.Address.parseIp(target_ip, 0) catch {
+    const target_addr = parseIPAddress(target_ip) catch {
         return napi.Error.fromReason("Failed to parse IP address");
     };
 
     var results = ArrayList(PingResult).empty;
+    errdefer deinitPartialPingResults(allocator, &results);
 
-    if (target_addr.any.family != posix.AF.INET and target_addr.any.family != posix.AF.INET6) {
+    if (target_addr.family != posix.AF.INET and target_addr.family != posix.AF.INET6) {
         return napi.Error.fromReason("IPv4 is not supported");
     }
 
-    const socket: posix.socket_t = posix.socket(target_addr.any.family, posix.SOCK.DGRAM, posix.IPPROTO.ICMP) catch {
+    const socket_rc = std.c.socket(@intCast(target_addr.family), @intCast(posix.SOCK.DGRAM), @intCast(posix.IPPROTO.ICMP));
+    if (socket_rc < 0) {
         return napi.Error.fromReason("Failed to create socket");
-    };
+    }
+    const socket: posix.socket_t = socket_rc;
+    defer _ = std.c.close(socket);
 
     const timeout_ms = config.config.timeout_ms;
     const timeout = posix.timeval{
@@ -69,50 +166,65 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
     for (0..config.config.count) |index| {
         // Create ICMP packet with auto-generated payload
         var packet = pack.ICMPPacket.init(allocator, 1, @intCast(index)) catch @panic("Failed to initialize ICMP packet");
+        defer allocator.free(packet.data);
 
         const packet_data = packet.serialize(allocator) catch {
             return napi.Error.fromReason("Failed to serialize ICMP packet");
         };
-        const start_time = std.time.nanoTimestamp();
-        _ = posix.sendto(socket, packet_data, 0, &target_addr.any, target_addr.getOsSockLen()) catch @panic("Failed to send data");
+        defer allocator.free(packet_data);
 
-        const bytes_received = posix.recvfrom(socket, buffer[0..], 0, &addr, &addrlen) catch @panic("Failed to receive data");
-        const end_time = std.time.nanoTimestamp();
+        const start_time = monotonicNanoTimestamp();
+        if (std.c.sendto(socket, packet_data.ptr, packet_data.len, 0, &target_addr.storage.any, target_addr.len) < 0) {
+            @panic("Failed to send data");
+        }
+
+        const recv_rc = std.c.recvfrom(socket, buffer[0..].ptr, buffer.len, 0, &addr, &addrlen);
+        if (recv_rc < 0) {
+            @panic("Failed to receive data");
+        }
+        const bytes_received: usize = @intCast(recv_rc);
+        const end_time = monotonicNanoTimestamp();
         const rtt_ns = end_time - start_time;
         const rtt_ms = @as(f64, @floatFromInt(rtt_ns)) / 1_000_000.0;
 
         // Parse the received packet
         const icmp_data = pack.extractICMPFromIP(buffer[0..bytes_received]) catch {
-            results.append(allocator, PingResult{
-                .sequence = 1,
-                .rtt_ms = rtt_ms,
-                .success = false,
-                .error_msg = "Failed to extract ICMP data from IP packet",
-                .ip_addr = target_ip,
-            }) catch @panic("Failed to append PingResult");
+            appendPingResult(
+                allocator,
+                &results,
+                1,
+                rtt_ms,
+                false,
+                "Failed to extract ICMP data from IP packet",
+                target_ip,
+            ) catch @panic("Failed to append PingResult");
             continue;
         };
 
         const received_packet = pack.ICMPPacket.parse(allocator, icmp_data) catch {
-            results.append(allocator, PingResult{
-                .sequence = 1,
-                .rtt_ms = rtt_ms,
-                .success = false,
-                .error_msg = "Failed to parse ICMP packet",
-                .ip_addr = target_ip,
-            }) catch @panic("Failed to append PingResult");
+            appendPingResult(
+                allocator,
+                &results,
+                1,
+                rtt_ms,
+                false,
+                "Failed to parse ICMP packet",
+                target_ip,
+            ) catch @panic("Failed to append PingResult");
             continue;
         };
 
         // Verify checksum
         if (!received_packet.verifyChecksum()) {
-            results.append(allocator, PingResult{
-                .sequence = 1,
-                .rtt_ms = rtt_ms,
-                .success = false,
-                .error_msg = "ICMP packet checksum verification failed",
-                .ip_addr = target_ip,
-            }) catch @panic("Failed to append PingResult");
+            appendPingResult(
+                allocator,
+                &results,
+                1,
+                rtt_ms,
+                false,
+                "ICMP packet checksum verification failed",
+                target_ip,
+            ) catch @panic("Failed to append PingResult");
             continue;
         }
 
@@ -120,13 +232,15 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
         const is_echo_reply = received_packet.header.type == pack.ICMP_ECHO_REPLY;
         const sequence_match = std.mem.nativeToBig(u16, received_packet.header.sequence) == index;
 
-        results.append(allocator, PingResult{
-            .sequence = 1,
-            .rtt_ms = rtt_ms,
-            .success = is_echo_reply and sequence_match,
-            .error_msg = null,
-            .ip_addr = target_ip,
-        }) catch @panic("Failed to append PingResult");
+        appendPingResult(
+            allocator,
+            &results,
+            1,
+            rtt_ms,
+            is_echo_reply and sequence_match,
+            null,
+            target_ip,
+        ) catch @panic("Failed to append PingResult");
     }
 
     return results;
@@ -135,14 +249,20 @@ fn ping_execute(_: napi.Env, config: PingConfig) !ArrayList(PingResult) {
 const PingConfig = struct {
     host: []const u8,
     config: InnerPingOption,
+
+    const Self = @This();
+
+    pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+        allocator.free(self.host);
+    }
 };
 
-pub fn ping(env: napi.Env, host: []const u8, config: ?PingOption) napi.Promise {
+pub fn ping(host: []const u8, config: ?PingOption) napi.Async(ArrayList(PingResult), .thread) {
     var options = InnerPingOption{
         .count = 10,
         .interval_ms = 1000,
         .timeout_ms = 5000,
-        .ip_version = "ipv4",
+        .ip_version = .ipv4,
     };
 
     if (config) |c| {
@@ -156,19 +276,20 @@ pub fn ping(env: napi.Env, host: []const u8, config: ?PingOption) napi.Promise {
             options.timeout_ms = timeout_ms;
         }
         if (c.ip_version) |ip_version| {
-            options.ip_version = ip_version;
+            defer napi.globalAllocator().free(ip_version);
+            options.ip_version = if (std.mem.eql(u8, ip_version, "ipv4"))
+                .ipv4
+            else if (std.mem.eql(u8, ip_version, "ipv6"))
+                .ipv6
+            else
+                .auto;
         }
     }
 
-    const worker = napi.Worker(env, .{
-        .data = PingConfig{
-            .host = host,
-            .config = options,
-        },
-        .Execute = ping_execute,
-    });
-
-    return worker.AsyncQueue();
+    return napi.Async(ArrayList(PingResult), .thread).from(PingConfig{
+        .host = host,
+        .config = options,
+    }, ping_execute);
 }
 
 comptime {
