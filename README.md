@@ -2,8 +2,6 @@
 
 A simple ping implement by zig.
 
-> Note: This is an experiential project, if you want a stable version, please use `@ohos-rs/ping`.
-
 ## Install
 
 ```bash
